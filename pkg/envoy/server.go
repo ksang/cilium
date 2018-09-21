@@ -251,7 +251,7 @@ func StartXDSServer(stateDir string) *XDSServer {
 }
 
 // AddListener adds a listener to a running Envoy proxy.
-func (s *XDSServer) AddListener(name string, kind policy.L7ParserType, endpointPolicyName string, port uint16, isIngress bool, wg *completion.WaitGroup) {
+func (s *XDSServer) AddListener(name string, kind policy.L7ParserType, endpointPolicyName string, port uint16, isIngress bool, wg *completion.WaitGroup, realloc func() (uint16, error)) {
 	log.Debugf("Envoy: %s AddListener %s", kind, name)
 
 	s.mutex.Lock()
@@ -281,7 +281,33 @@ func (s *XDSServer) AddListener(name string, kind policy.L7ParserType, endpointP
 		listenerConf.ListenerFilters[0].Config.Fields["is_ingress"].GetKind().(*structpb.Value_BoolValue).BoolValue = true
 	}
 
-	s.listenerMutator.Upsert(ListenerTypeURL, name, listenerConf, []string{"127.0.0.1"}, wg.AddCompletion())
+	retries := 0
+	maxRetries := 10
+	var comp *completion.Completion
+	comp = wg.AddCompletionWithCallbacks(nil, func() {
+		oldPort := port
+		port, err := realloc()
+		if err != nil && retries < maxRetries {
+			retries++
+			listenerConf.Address.GetSocketAddress().PortSpecifier = &envoy_api_v2_core.SocketAddress_PortValue{PortValue: uint32(port)}
+			log.Debugf("Retrying listener %s with reallocated proxyport (%d -> %d)", name, oldPort, port)
+			// Upsert cannot be called from the callback due to a locks being held.
+			go func() {
+				// Upsert a new version of the Listener
+				// This will block until the caller has released locks.
+				s.listenerMutator.Upsert(ListenerTypeURL, name, listenerConf, []string{"127.0.0.1"}, comp)
+				log.Debug("Envoy: Listener updated after NACK")
+			}()
+		} else {
+			log.WithError(err).Errorf("Envoy: Failed to apply new listener configuration after %d retries (irrecoverable NACK received), removing listener %s", retries, name)
+			// Upsert cannot be called from the callback due to a locks being held
+			go func() {
+				s.RemoveListener(name, nil) // Not using comp, it will time out.
+			}()
+		}
+	})
+
+	s.listenerMutator.Upsert(ListenerTypeURL, name, listenerConf, []string{"127.0.0.1"}, comp)
 }
 
 // RemoveListener removes an existing Envoy Listener.
@@ -596,7 +622,7 @@ func getNetworkPolicy(name string, id identity.NumericIdentity, policy *policy.L
 // UpdateNetworkPolicy adds or updates a network policy in the set published
 // to L7 proxies.
 // When the proxy acknowledges the network policy update, it will result in
-// a subsequent call to the endpoint's OnProxyPolicyAcknowledge() function.
+// a subsequent call to the endpoint's OnProxyPolicyUpdate() function.
 func (s *XDSServer) UpdateNetworkPolicy(ep logger.EndpointUpdater, policy *policy.L4Policy,
 	ingressPolicyEnforced, egressPolicyEnforced bool, labelsMap identity.IdentityCache,
 	deniedIngressIdentities, deniedEgressIdentities map[identity.NumericIdentity]bool, wg *completion.WaitGroup) error {
@@ -672,9 +698,9 @@ func (s *XDSServer) UpdateNetworkPolicy(ep logger.EndpointUpdater, policy *polic
 		}
 		var c *completion.Completion
 		if wg == nil {
-			c = completion.NewCallback(context.Background(), callback)
+			c = completion.NewCompletion(context.Background(), callback, nil)
 		} else {
-			c = wg.AddCompletionWithCallback(callback)
+			c = wg.AddCompletionWithCallbacks(callback, nil)
 		}
 		nodeIDs := make([]string, 0, 1)
 		if ep.HasSidecarProxy() {

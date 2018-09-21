@@ -55,9 +55,13 @@ func ackCallback() {
 	log.Info("ACK Callback called")
 }
 
+func nackCallback() {
+	log.Info("NACK Callback called")
+}
+
 // UpsertNetworkPolicy must only be used for testing!
 func UpsertNetworkPolicy(s *envoy.XDSServer, p *cilium.NetworkPolicy) {
-	c := completion.NewCallback(context.Background(), ackCallback)
+	c := completion.NewCompletion(context.Background(), ackCallback, nackCallback)
 	s.NetworkPolicyMutator.Upsert(envoy.NetworkPolicyTypeURL, p.Name, p, []string{"127.0.0.1"}, c)
 }
 
