@@ -37,7 +37,7 @@ var envoyOnce sync.Once
 
 // createEnvoyRedirect creates a redirect with corresponding proxy
 // configuration. This will launch a proxy instance.
-func createEnvoyRedirect(r *Redirect, stateDir string, xdsServer *envoy.XDSServer, wg *completion.WaitGroup, realloc func() (uint16, error)) (RedirectImplementation, error) {
+func createEnvoyRedirect(r *Redirect, stateDir string, xdsServer *envoy.XDSServer, wg *completion.WaitGroup, acked func(redirectPort uint16), realloc func() (uint16, error)) (RedirectImplementation, error) {
 	envoyOnce.Do(func() {
 		// Start Envoy on first invocation
 		envoyProxy = envoy.StartEnvoy(stateDir, viper.GetString("envoy-log"), 0)
@@ -57,7 +57,7 @@ func createEnvoyRedirect(r *Redirect, stateDir string, xdsServer *envoy.XDSServe
 			return nil, fmt.Errorf("%s: Cannot create redirect, proxy local endpoint has no IP address", r.id)
 		}
 		// redirect not visible yet, no need to lock for ProxyPort
-		xdsServer.AddListener(redir.listenerName, r.parserType, ip, r.ProxyPort, r.ingress, wg, realloc)
+		xdsServer.AddListener(redir.listenerName, r.parserType, ip, r.ProxyPort, r.ingress, wg, acked, realloc)
 
 		return redir, nil
 	}

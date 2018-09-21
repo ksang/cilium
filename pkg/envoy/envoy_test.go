@@ -92,16 +92,17 @@ func (s *EnvoySuite) TestEnvoy(c *C) {
 	c.Assert(envoyProxy, NotNil)
 	log.Debug("started Envoy")
 
+	ackedCallback := func(port uint16) { log.Debug("Envoy Acked redirect port %d, port") }
 	reallocCallback := func() (uint16, error) { return 0, fmt.Errorf("Not implemented") }
 
 	log.Debug("adding listener1")
-	xdsServer.AddListener("listener1", policy.ParserTypeHTTP, "1.2.3.4", 8081, true, s.waitGroup, reallocCallback)
+	xdsServer.AddListener("listener1", policy.ParserTypeHTTP, "1.2.3.4", 8081, true, s.waitGroup, ackedCallback, reallocCallback)
 
 	log.Debug("adding listener2")
-	xdsServer.AddListener("listener2", policy.ParserTypeHTTP, "1.2.3.4", 8082, true, s.waitGroup, reallocCallback)
+	xdsServer.AddListener("listener2", policy.ParserTypeHTTP, "1.2.3.4", 8082, true, s.waitGroup, ackedCallback, reallocCallback)
 
 	log.Debug("adding listener3")
-	xdsServer.AddListener("listener3", policy.ParserTypeHTTP, "1.2.3.4", 8083, false, s.waitGroup, reallocCallback)
+	xdsServer.AddListener("listener3", policy.ParserTypeHTTP, "1.2.3.4", 8083, false, s.waitGroup, ackedCallback, reallocCallback)
 
 	err = s.waitForProxyCompletion()
 	c.Assert(err, IsNil)
@@ -119,7 +120,7 @@ func (s *EnvoySuite) TestEnvoy(c *C) {
 
 	// Add listener3 again
 	log.Debug("adding listener 3")
-	xdsServer.AddListener("listener3", policy.L7ParserType("test.headerparser"), "1.2.3.4", 8083, false, s.waitGroup, reallocCallback)
+	xdsServer.AddListener("listener3", policy.L7ParserType("test.headerparser"), "1.2.3.4", 8083, false, s.waitGroup, ackedCallback, reallocCallback)
 
 	err = s.waitForProxyCompletion()
 	c.Assert(err, IsNil)

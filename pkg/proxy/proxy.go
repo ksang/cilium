@@ -150,7 +150,7 @@ var gcOnce sync.Once
 // a proxy instance. If the redirect is already in place, only the rules will be
 // updated.
 func (p *Proxy) CreateOrUpdateRedirect(l4 *policy.L4Filter, id string, localEndpoint logger.EndpointUpdater,
-	wg *completion.WaitGroup) (*Redirect, error) {
+	wg *completion.WaitGroup, acked func(redirectPort uint16)) error {
 	gcOnce.Do(func() {
 		go func() {
 			for {
@@ -177,7 +177,7 @@ func (p *Proxy) CreateOrUpdateRedirect(l4 *policy.L4Filter, id string, localEndp
 
 		if r.parserType != l4.L7Parser {
 			if err := p.removeRedirect(id, r, wg); err != nil {
-				return nil, fmt.Errorf("unable to remove old redirect: %s", err)
+				return fmt.Errorf("unable to remove old redirect: %s", err)
 			}
 
 			goto create
@@ -187,7 +187,7 @@ func (p *Proxy) CreateOrUpdateRedirect(l4 *policy.L4Filter, id string, localEndp
 		err := r.implementation.UpdateRules(wg)
 		if err != nil {
 			scopedLog.WithError(err).Error("Unable to update ", l4.L7Parser, " proxy")
-			return nil, err
+			return err
 		}
 
 		r.lastUpdated = time.Now()
@@ -195,7 +195,7 @@ func (p *Proxy) CreateOrUpdateRedirect(l4 *policy.L4Filter, id string, localEndp
 		scopedLog.WithField(logfields.Object, logfields.Repr(r)).
 			Debug("updated existing ", l4.L7Parser, " proxy instance")
 
-		return r, nil
+		return nil
 	}
 
 create:
@@ -209,7 +209,7 @@ retryCreatePort:
 	for nRetry := 0; ; nRetry++ {
 		to, err := p.allocatePort()
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		redir.ProxyPort = to // redir not visible yet, no locking needed
@@ -217,11 +217,19 @@ retryCreatePort:
 		switch l4.L7Parser {
 		case policy.ParserTypeKafka:
 			redir.implementation, err = createKafkaRedirect(redir, kafkaConfiguration{}, DefaultEndpointInfoRegistry)
-
+			if err == nil {
+				// Kafka redirects are created synchronously, so we'll have to trigger the callback here
+				// Note that the callback must not be called from this goroutine, as it may
+				// take locks we are already holding!
+				// We can't issue a goroutine to call 'acked' directly, as we can't guarantee that the
+				// new goroutine will be scheduled before the caller returns from Wait for the WaitGroup!
+				comp := wg.AddCompletionWithCallbacks(func() { acked(to) }, nil)
+				go comp.Complete()
+			}
 		case policy.ParserTypeHTTP:
 			fallthrough
 		default:
-			redir.implementation, err = createEnvoyRedirect(redir, p.stateDir, p.XDSServer, wg, func() (uint16, error) {
+			redir.implementation, err = createEnvoyRedirect(redir, p.stateDir, p.XDSServer, wg, acked, func() (uint16, error) {
 				// Reallocate proxyport after a NACK has been received.
 				p.mutex.Lock()
 				newPort, err := p.allocatePort()
@@ -231,6 +239,9 @@ retryCreatePort:
 					redir.ProxyPort = newPort
 					p.allocatedPorts[newPort] = struct{}{}
 					redir.mutex.Unlock()
+				} else {
+					// reallocation failed, delete the redirect
+					delete(p.redirects, id)
 				}
 				p.mutex.Unlock()
 				return newPort, err
@@ -251,7 +262,7 @@ retryCreatePort:
 		// an error occurred, and we have no more retries
 		case nRetry >= redirectCreationAttempts:
 			scopedLog.WithError(err).Error("Unable to create ", l4.L7Parser, " proxy")
-			return nil, err
+			return err
 
 		// an error occurred and we can retry
 		default:
@@ -259,7 +270,7 @@ retryCreatePort:
 		}
 	}
 
-	return redir, nil
+	return nil
 }
 
 // RemoveRedirect removes an existing redirect.

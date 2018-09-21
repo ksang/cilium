@@ -29,7 +29,7 @@ type Owner interface {
 	GetPolicyRepository() *policy.Repository
 
 	// UpdateProxyRedirect must update the redirect configuration of an endpoint in the proxy
-	UpdateProxyRedirect(e *Endpoint, l4 *policy.L4Filter, proxyWaitGroup *completion.WaitGroup) (uint16, error)
+	UpdateProxyRedirect(e *Endpoint, l4 *policy.L4Filter, proxyWaitGroup *completion.WaitGroup, acked func(redirectPort uint16)) error
 
 	// RemoveProxyRedirect must remove the redirect installed by UpdateProxyRedirect
 	RemoveProxyRedirect(e *Endpoint, id string, proxyWaitGroup *completion.WaitGroup) error

@@ -66,6 +66,8 @@ func (wg *WaitGroup) AddCompletion() *Completion {
 // Wait blocks until all completions added by calling AddCompletion are
 // completed, or the context is canceled, whichever happens first.
 // Returns the context's error if it is cancelled, nil otherwise.
+// No callbacks of the completions in this wait group will be called after
+// this returns.
 func (wg *WaitGroup) Wait() error {
 	wg.counterLocker.Lock()
 	defer wg.counterLocker.Unlock()
@@ -129,10 +131,12 @@ func (c *Completion) Retry() {
 	case <-c.completed:
 		c.lock.Unlock() // Do not retry if already completed
 	default:
-		c.lock.Unlock()
 		if c.retryCallback != nil {
+			// We must call the callbacks synchronously to guarantee
+			// that they are actually called before Wait() returns.
 			c.retryCallback()
 		}
+		c.lock.Unlock()
 	}
 }
 
@@ -147,11 +151,13 @@ func (c *Completion) complete(runCallback bool) {
 	case <-c.completed:
 		c.lock.Unlock()
 	default:
-		close(c.completed)
-		c.lock.Unlock()
 		if runCallback && c.callback != nil {
+			// We must call the callbacks synchronously to guarantee
+			// that they are actually called before Wait() returns.
 			c.callback()
 		}
+		close(c.completed)
+		c.lock.Unlock()
 	}
 }
 

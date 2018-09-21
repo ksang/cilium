@@ -251,7 +251,9 @@ func StartXDSServer(stateDir string) *XDSServer {
 }
 
 // AddListener adds a listener to a running Envoy proxy.
-func (s *XDSServer) AddListener(name string, kind policy.L7ParserType, endpointPolicyName string, port uint16, isIngress bool, wg *completion.WaitGroup, realloc func() (uint16, error)) {
+// 'acked', if non-nil, is called with the proxy port when Envoy has successfully created the listener.
+// 'realloc' is called to request a new proxy port allocation if a NACK is received from Envoy
+func (s *XDSServer) AddListener(name string, kind policy.L7ParserType, endpointPolicyName string, port uint16, isIngress bool, wg *completion.WaitGroup, acked func(redirectPort uint16), realloc func() (uint16, error)) {
 	log.Debugf("Envoy: %s AddListener %s", kind, name)
 
 	s.mutex.Lock()
@@ -284,7 +286,7 @@ func (s *XDSServer) AddListener(name string, kind policy.L7ParserType, endpointP
 	retries := 0
 	maxRetries := 10
 	var comp *completion.Completion
-	comp = wg.AddCompletionWithCallbacks(nil, func() {
+	comp = wg.AddCompletionWithCallbacks(func() { acked(port) }, func() {
 		oldPort := port
 		port, err := realloc()
 		if err != nil && retries < maxRetries {
