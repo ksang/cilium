@@ -212,7 +212,7 @@ retryCreatePort:
 			return nil, err
 		}
 
-		redir.ProxyPort = to
+		redir.ProxyPort = to // redir not visible yet, no locking needed
 
 		switch l4.L7Parser {
 		case policy.ParserTypeKafka:
@@ -226,9 +226,11 @@ retryCreatePort:
 				p.mutex.Lock()
 				newPort, err := p.allocatePort()
 				if err == nil {
+					redir.mutex.Lock()
 					delete(p.allocatedPorts, redir.ProxyPort)
 					redir.ProxyPort = newPort
 					p.allocatedPorts[newPort] = struct{}{}
+					redir.mutex.Unlock()
 				}
 				p.mutex.Unlock()
 				return newPort, err
@@ -289,16 +291,16 @@ func (p *Proxy) removeRedirect(id string, r *Redirect, wg *completion.WaitGroup)
 	go func() {
 		time.Sleep(portReuseDelay)
 
+		p.mutex.Lock()
+		r.mutex.RLock()
 		// The cleanup of the proxymap is delayed a bit to ensure that
 		// the datapath has implemented the redirect change and we
 		// cleanup the map before we release the port and allow reuse
 		proxymap.CleanupOnRedirectClose(r.ProxyPort)
-
-		p.mutex.Lock()
 		delete(p.allocatedPorts, r.ProxyPort)
-		p.mutex.Unlock()
-
 		log.WithField(fieldProxyRedirectID, id).Debugf("Delayed release of proxy port %d", r.ProxyPort)
+		r.mutex.RUnlock()
+		p.mutex.Unlock()
 	}()
 
 	return nil
